@@ -1,0 +1,117 @@
+---
+title: "Scientist Screen Responses"
+output: html_notebook
+---
+<span style="color:red">All candidate responses colored in red. All code supporting responses are beneath the question/answer.</span>
+
+Part 1
+```{r}
+#Load required packages
+library(tidyverse, quietly = TRUE)
+library(data.table, quietly = TRUE)
+library(rstatix, quietly = TRUE)
+library(BSDA, quietly = TRUE)
+library(car, quietly = TRUE)
+library(ggpubr, quietly = TRUE)
+```
+
+```{r}
+#Read in data files and store as a dataframe
+setwd("~/Desktop/Technical Screen/seq_QC_data/") #set working directory
+filesToProcess <- dir(pattern = "*.txt") #set file pattern
+files <- lapply(filesToProcess, function(x) read.table(x, header = FALSE, skip = 1)) #read in files (creates a list of dfs)
+QCdf <- bind_rows(files, .id = "column_label") #bind rows of list
+QCdf <- rename(QCdf, barcode = V1, sample_type = V2, post_quant = V3, pre_quant = V4, frag_size = V5, coverage = V6, CNV_calling = V7, passed_well = V8) #Add column names
+head(QCdf)
+```
+A) What percentage of samples have passed sequencing QC? <span style="color:red">98.76% samples pass sequencing QC. </span>
+```{r}
+(QCdf %>% filter(passed_well == "passed") %>% count())  / (nrow(QCdf)) *100
+```
+
+What percentage have failed due to low sequencing coverage? <span style="color:red">1.24% fail due to low sequencing coverage. </span>
+```{r}
+(QCdf %>% filter(coverage == "failed") %>% count())  / (nrow(QCdf)) *100
+```
+
+What percentage of samples passed sequencing coverage but failed due to CNV calling? <span style="color:red">5% samples pass coverage but fail CNV calling. </span>
+```{r}
+(QCdf %>% filter(coverage == "passed" & CNV_calling == "failed") %>% count())  / (nrow(QCdf)) *100
+```
+
+B) Does "sample_type" relate to failing sequencing coverage QC? <span style="color:red">Yes, there appears to be an effect of sample type passing sequencing coverage QC. A blood input fails at ~0.86%, while saliva inputs fail at a rate of ~2.76%.  In support of this, performing an unpaired two-sample Wilcoxon test yields a p-value < 0.001, suggesting a difference in sample types.</span>
+```{r}
+typefail <- QCdf %>% group_by(sample_type) %>% filter(coverage == "failed") #filter for coverage failure by sample type
+#create a df and calculate percentages
+merge(typefail %>% count(sample_type), QCdf %>% count(sample_type), by = "sample_type") %>% rename(Fail_Total = n.x, n = n.y) %>% mutate(pct = (Fail_Total / n) *100)
+#subset data
+QCdf$Binary <- ifelse(QCdf$coverage == "passed", 1, 0)
+blood <- QCdf %>% filter(sample_type == "blood")
+saliva <- QCdf %>% filter(sample_type == "saliva")
+#perform Wilcoxon Test
+wilcox.test(x=blood$Binary, y=saliva$Binary, alternative = "two.sided")
+```
+
+Does "sample_type" relate to passing coverage but failing CNV calling QC? <span style="color:red">No, when comparing sample types that pass coverage but fail CNV calling, both blood and saliva fail at about a 5% rate (4.98% and 5.1%, respectively). In support of this, if we perform a Chi-Square test with coverage QC and CNV calling QC metrics grouped by sample type, our p-value > 0.05. </span>
+```{r}
+bloodFailTotal <- QCdf[c("sample_type", "coverage", "CNV_calling")] %>% filter(sample_type == "blood") %>% filter(coverage == "passed" & CNV_calling == "failed") %>% count() #create variable containing number of blood samples that pass coverage but fail CNV calling
+salivaFailTotal <- QCdf[c("sample_type", "coverage", "CNV_calling")] %>% filter(sample_type == "saliva") %>% filter(coverage == "passed" & CNV_calling == "failed") %>% count() #create variable containing number of saliva samples that pass coverage but fail CNV calling
+#create df with all values determined above
+QCdf_type <- QCdf %>% count(sample_type)
+QCdf_type$Fail_Total <- as.integer(c(bloodFailTotal, salivaFailTotal))
+#add percent column
+QCdf_type <- QCdf_type %>% mutate(pct = (Fail_Total / n) *100)
+QCdf_type
+#perform chi-square test following grouping
+QCdf %>% group_by(sample_type) %>% distinct(sample_type, coverage, CNV_calling) %>% ungroup %>% summarise(pval = chisq.test(coverage, CNV_calling)$p.value)
+```
+
+C) Which in-process QC metrics are indicative of failing sequencing due to low coverage? <span style="color:red"> All in process metrics influence failing sequencing due to low coverage. When comparing the distribution of passing vs failing samples based on low coverage via T-test, pre-quant values, post-quant values, and fragment size are all significantly different (p-value < 0.001 for all three metrics). </span>
+```{r}
+QCdf[3:7] %>% group_by(sample_type) %>% filter(coverage == "passed") %>% summary() #summary statistics on samples that passed sequencing coverage QC metric
+QCdf[3:7] %>% group_by(sample_type) %>% filter(coverage == "failed") %>% summary() #summary statistics on samples that failed sequencing coverage QC metric
+#Violin plots to visualize the data
+ggplot(QCdf, aes(x= coverage, y = pre_quant)) + geom_violin()  + stat_pvalue_manual(pre_stat, label = "p.adj", tip.length = 0.01, y.position = 85) + stat_summary(fun="mean", color = "red") + labs(title="Pre-Quant Values as a Function of Sequencing Coverage", x="Sequencing Coverage QC Metric" ,y="Pre-Quant DNA Concentration (A.U.)", caption="Violin plots showing distribution of pre-quant DNA values in relation\n to passing or failing sequencing coverage QC metric. Red point \nrepresents the average. The number above the bracket represents \np-value as determined by Wilcoxon test." ) + theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0))
+ggplot(QCdf, aes(x= coverage, y = post_quant)) + geom_violin()  + stat_pvalue_manual(post_stat, label = "p.adj", tip.length = 0.01, y.position = 950) + stat_summary(fun="mean", color = "red") + labs(title="Post-Quant Values as a Function of Sequencing Coverage", x="Sequencing Coverage QC Metric" ,y="Post-Quant DNA Concentration (A.U.)", caption="Violin plots showing distribution of pos-quant DNA values in relation\n to passing or failing sequencing coverage QC metric. Red point \nrepresents the average. The number above the bracket represents \np-value as determined by Wilcoxon test." ) + theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0))
+ggplot(QCdf, aes(x= coverage, y = frag_size)) + geom_violin()  + stat_pvalue_manual(frag_stat, label = "p.adj", tip.length = 0.01, y.position = 825) + stat_summary(fun="mean", color = "red") + labs(title="DNA Fragment Sizes as a Function of Sequencing Coverage", x="Sequencing Coverage QC Metric" ,y="DNA Fragment Sizes (bp)", caption="Violin plots showing distribution of DNA fragment sizes in relation\n to passing or failing sequencing coverage QC metric. Red point \nrepresents the average. The number above the bracket represents \np-value as determined by Wilcoxon test." ) + theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0))
+#Perform T-test and create df with results
+pre_stat <- compare_means(pre_quant ~ coverage, data = QCdf, method = "wilcox.test")
+post_stat <- compare_means(post_quant ~ coverage, data = QCdf, method = "wilcox.test")
+frag_stat <- compare_means(frag_size ~ coverage, data = QCdf, method = "wilcox.test")
+rbind(pre_stat, post_stat, frag_stat)
+```
+
+Which metrics are indicative of passing coverage but failing CNV calling? Report your findings graphically with a figure legend. <span style="color:red"> When filtering by samples passing coverage, only fragment size and post-quant values are indicative of failing CNV calling. A T-test reveals a significant difference for post-quant (p-value < 0.001) and fragment size (p-value < 0.001), but no difference for pre-quant values (n.s.). </span>
+```{r}
+QCdf_subset <- QCdf %>% filter(CNV_calling == "failed") #filter df for samples that failed CNV call QC metric
+#Violin plots for data viz
+ggplot(QCdf_subset, aes(x= coverage, y = pre_quant)) + geom_violin() + stat_summary(fun="mean", color = "red") + stat_pvalue_manual(pre_f_stat, label = "p.adj", tip.length = 0.01, y.position = 90) + labs(title="Pre-Quant Values as a Function of Sequencing Coverage \nWhen CNV calling has Failed", x="Sequencing Coverage QC Metric" ,y="Pre-Quant DNA Concentration (A.U.)", caption="Violin plots showing distribution that of pre-quant DNA values in relation\n to passing or failing sequencing coverage QC metric following subsetting\n the data by failing CNV calling. Red point represents the average. The\n number above the bracket represents p-value as determined by Wilcoxon test." ) + theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0))
+ggplot(QCdf_subset, aes(x= coverage, y = post_quant)) + geom_violin() + stat_summary(fun="mean", color = "red")  + stat_pvalue_manual(post_f_stat, label = "p.adj", tip.length = 0.01, y.position = 950) + labs(title="Post-Quant Values as a Function of Sequencing Coverage \nWhen CNV calling has Failed", x="Sequencing Coverage QC Metric" ,y="Post-Quant DNA Concentration (A.U.)", caption="Violin plots showing distribution that of post-quant DNA values in relation\n to passing or failing sequencing coverage QC metric following subsetting\n the data by failing CNV calling. Red point represents the average. The\n number above the bracket represents p-value as determined by Wilcoxon test." ) + theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0))
+ggplot(QCdf_subset, aes(x= coverage, y = frag_size)) + geom_violin() + stat_summary(fun="mean", color = "red") + stat_pvalue_manual(frag_f_stat, label = "p.adj", tip.length = 0.01, y.position = 800) + labs(title="DNA Fragment Sizes as a Function of Sequencing Coverage \nWhen CNV calling has Failed", x="Sequencing Coverage QC Metric" ,y="DNA Fragment Size (bp)", caption="Violin plots showing distribution that of DNA fragment sizes in relation\n to passing or failing sequencing coverage QC metric following subsetting\n the data by failing CNV calling. Red point represents the average. The\n number above the bracket represents p-value as determined by Wilcoxon test." ) + theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0))
+#filter df by passing coverage to subset data
+QCdf_filtered <- QCdf %>% filter(coverage == "passed")
+#Perform Wilcox and create df with results
+pre_f_stat <- compare_means(pre_quant ~ CNV_calling, data = QCdf_filtered, method = "wilcox.test")
+post_f_stat <- compare_means(post_quant ~ CNV_calling, data = QCdf_filtered, method = "wilcox.test")
+frag_f_stat <- compare_means(frag_size ~ CNV_calling, data = QCdf_filtered, method = "wilcox.test")
+rbind(pre_f_stat, post_f_stat, frag_f_stat)
+```
+
+D) Have the in-process QC metrics been stable over time (note: batches are processed in numerical order)? Report your findings graphically with a figure legend. <span style="color:red"> When batched averages are plotted by time, pre-quant values appear to stay stable. Post quant values appear to increase over time, while fragment size tends to drop over time. In support of this, performing ANCOVA for all three metrics reveals that post-quant and fragment sizes change significantly over time (p < 0.001 for both metrics). </span>
+```{r}
+QCdf_pre <- setDT(QCdf)[ , .(pre_quant = mean(pre_quant)), by = column_label] %>% mutate(Batch = 1:n()) #calculate mean of all pre_quant values by batch number (i.e., 96 well plate)
+QCdf_post <- setDT(QCdf)[ , .(post_quant = mean(post_quant)), by = column_label] %>% mutate(Batch = 1:n()) #calculate mean of all post_quant values by batch number (i.e., 96 well plate)
+QCdf_frag <- setDT(QCdf)[ , .(frag_size = mean(frag_size)), by = column_label] %>% mutate(Batch = 1:n()) #calculate mean of all frag_size values by batch number (i.e., 96 well plate)
+#scatter plot of averages of batch variables (i.e., pre_quant, post_quant, frag_size) with loess trend line added for visualizing patterns in the data
+#perform ANCOVA
+#report ANCOVA results
+ggplot(QCdf_pre, aes(x = Batch, y = pre_quant)) + geom_point() + geom_smooth() + labs(title="Pre-Quant DNA Concentration Over Time", x="Batch Number" ,y="Pre-Quant DNA Concentration (A.U.)", caption="Scatter plot of average pre-quant DNA concentrations by batch number.\n The blue line represents a Loess curve and shaded region shows the \n95% confidence band. ANCOVA p-value is printed within the plot.") + theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0)) + annotate("text", x=50, y=57,label = "p-value = 0.165")
+pre_batch_model <- aov(pre_quant ~ Batch, QCdf_pre)
+summary(pre_batch_model)
+ggplot(QCdf_post, aes(x = Batch, y = post_quant)) + geom_point()  + geom_smooth() + labs(title="Post-Quant DNA Concentration Over Time", x="Batch Number" ,y="Post-Quant DNA Concentration (A.U.)", caption="Scatter plot of average post-quant DNA concentrations by batch number.\n The blue line represents a Loess curve and shaded region shows the \n95% confidence band. ANCOVA p-value is printed within the plot.") + theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0)) + annotate("text", x=50, y=650,label = "p-value < 0.001")
+post_batch_model <- aov(post_quant ~ Batch, QCdf_post)
+summary(post_batch_model)
+ggplot(QCdf_frag, aes(x = Batch, y = frag_size)) + geom_point() + geom_smooth() + labs(title="DNA Fragment Size Over Time", x="Batch Number" ,y="DNA Fragment Size (bp)", caption="Scatter plot of average DNA fragment size by batch number.\n The blue line represents a Loess curve and shaded region shows the \n95% confidence band. ANCOVA p-value is printed within the plot.") + theme(plot.title = element_text(hjust = 0.5), plot.caption = element_text(hjust = 0)) + annotate("text", x=250, y=625,label = "p-value < 0.001")
+frag_batch_model <-  aov(frag_size ~ Batch, QCdf_frag)
+summary(frag_batch_model)
+```
